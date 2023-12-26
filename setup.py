@@ -99,6 +99,7 @@ if not SKIP_CUDA_BUILD:
     cc_flag = []
     if CUDA_HOME is not None:
         _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
+        print('bare metal version:{0}'.format(bare_metal_version))
         if bare_metal_version < Version("11.6"):
             raise RuntimeError(
                 f"{PACKAGE_NAME} is only supported on CUDA 11.6 and above.  "

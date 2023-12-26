@@ -131,7 +131,7 @@ class Mamba(nn.Module):
             conv_state, ssm_state = self._get_states_from_cache(inference_params, batch)
             if inference_params.seqlen_offset > 0:
                 # The states are updated inplace
-                out, _, _ = self.step(hidden_states, conv_state, ssm_state)
+                out, _, _ = self.step(hidden_states, conv_state, ssm_state, inference_params.control_callback)
                 return out
 
         # We do matmul and transpose BLH -> HBL at the same time
@@ -206,7 +206,7 @@ class Mamba(nn.Module):
             out = self.out_proj(y)
         return out
 
-    def step(self, hidden_states, conv_state, ssm_state):
+    def step(self, hidden_states, conv_state, ssm_state, control_callback=None):
         dtype = hidden_states.dtype
         assert hidden_states.shape[1] == 1, "Only support decoding with 1 token at a time for now"
         xz = self.in_proj(hidden_states.squeeze(1))  # (B 2D)
@@ -236,12 +236,20 @@ class Mamba(nn.Module):
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
 
         # SSM step
+        selective_state_update = None # FIX ME
         if selective_state_update is None:
             # Discretize A and B
             dt = F.softplus(dt + self.dt_proj.bias.to(dtype=dt.dtype))
             dA = torch.exp(torch.einsum("bd,dn->bdn", dt, A))
             dB = torch.einsum("bd,bn->bdn", dt, B)
-            ssm_state.copy_(ssm_state * dA + rearrange(x, "b d -> b d 1") * dB)
+            t1 = ssm_state * dA
+            if control_callback is not None:
+                effort = control_callback(dA, dB, C, self.D, ssm_state, self.layer_idx)
+                x = x + effort
+            x_re = rearrange(x, "b d -> b d 1")
+            t2 = x_re * dB
+            # ssm_state.copy_(ssm_state * dA + rearrange(x, "b d -> b d 1") * dB)
+            ssm_state.copy_(t1 + t2)
             y = torch.einsum("bdn,bn->bd", ssm_state.to(dtype), C)
             y = y + self.D.to(dtype) * x
             y = y * self.act(z)  # (B D)

@@ -25,6 +25,8 @@ class InferenceParams:
     batch_size_offset: int = 0
     key_value_memory_dict: dict = field(default_factory=dict)
     lengths_per_sample: Optional[Tensor] = None
+    prompt_ssm_state_callback: Optional[list[Tensor]] = None
+    control_callback: None = None
 
     def reset(self, max_seqlen, max_batch_size):
         self.max_seqlen = max_seqlen
@@ -103,6 +105,8 @@ def decode(
     tensor_parallel=1,
     cg=False,
     enable_timing=False,
+    prompt_ssm_state_callback=None,
+    control_callback=None,
 ):
     """Decoding, either greedy or with top-k or top-p sampling.
     If top-k = 0, don't limit the number of candidates (pure sampling).
@@ -135,7 +139,9 @@ def decode(
         inference_params = model._decoding_cache.inference_params
         inference_params.reset(max_length, batch_size)
     else:
-        inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size)
+        inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size, 
+                                           prompt_ssm_state_callback=prompt_ssm_state_callback,
+                                           control_callback=control_callback)
 
     def get_logits(input_ids, inference_params):
         decoding = inference_params.seqlen_offset > 0
@@ -188,6 +194,16 @@ def decode(
     scores, sequences = [], [input_ids]
     while not should_stop(sequences[-1], inference_params):
         scores.append(get_logits(sequences[-1], inference_params))
+
+        # Report out the list of ssm_states after processing the prompt.
+        if inference_params.seqlen_offset == 0 and (inference_params.prompt_ssm_state_callback is not None):
+            # we have just finished processing the prompt
+            states = []
+            for layer in model.backbone.layers:
+                _, ssm_state = inference_params.key_value_memory_dict[layer.mixer.layer_idx]
+                states.append(ssm_state)
+            inference_params.prompt_ssm_state_callback(states)
+        
         inference_params.seqlen_offset += sequences[-1].shape[1]
         sequences.append(sample_tokens(scores[-1], inference_params))
     if enable_timing:
@@ -213,10 +229,14 @@ class GenerationMixin:
         temperature=1.0,
         return_dict_in_generate=False,
         output_scores=False,
+        prompt_ssm_state_callback=None,
+        control_callback=None,
         **kwargs,
     ):
         output = decode(
-            input_ids, self, max_length, top_k=top_k, top_p=top_p, temperature=temperature, **kwargs
+            input_ids, self, max_length, top_k=top_k, top_p=top_p, temperature=temperature, 
+            prompt_ssm_state_callback=prompt_ssm_state_callback,
+            control_callback=control_callback, **kwargs
         )
         if not output_scores:
             output.scores = None

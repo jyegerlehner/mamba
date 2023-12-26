@@ -54,7 +54,8 @@ if is_mamba:
     fn = lambda: model.generate(
         input_ids=input_ids,
         max_length=max_length,
-        cg=True,
+        # cg=True,
+        cg=False,
         return_dict_in_generate=True,
         output_scores=True,
         enable_timing=False,
