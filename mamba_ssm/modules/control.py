@@ -11,7 +11,80 @@ def compute_t2(P,A):
 def compute_t3(P,A,B,R):
     return torch.zeros_like(P)
 
+# computes A'PB
+def compute_atpb(A,P,B):
+    return einsum(A,P,B, "i n1, i n1 n2, i n2 -> i n1")
+
+# computes B'PB+R 
+def compute_btpbr(B,P,R):
+    # B   D x N
+    # P   D x N x N
+    # R   scalar
+    return einsum(B,P,B, 'i n1, i n1  n2, i n2 -> i') + R
+
 class TestControl(unittest.TestCase):
+    def test_P_t3(self):
+        d_inner = 5
+        d_state = 2
+        A = torch.zeros([d_inner, d_state])
+        P = torch.zeros([d_inner, d_state, d_state])
+        B = torch.zeros([d_inner,d_state])
+        R = torch.ones([1])
+
+        A[0,0] = 1.0
+        A[0,1] = 2.0
+        A[1,0] = 3.0
+        A[1,1] = -1.0
+        A[3,0] = -2.5
+        A[3,1] = 3.5
+        P[1,0,0] = 0.5
+        P[1,1,0] = 1.0
+        P[1,1,1] = 0.1
+        P[3,0,0] = -1.0
+        P[3,0,1] = 2.0
+        P[3,1,0] = 4.0
+        B[1,0] = 0.9
+        B[1,1] = -1.2
+        B[3,0] = -0.9
+        B[3,1] = 1.05
+
+        naive_t3 = torch.zeros([d_inner,d_state,d_state])
+
+        # Convert A to non-compressed representation.
+        Anaive = torch.zeros([d_inner, d_state, d_state])
+        Anaive_t = torch.zeros([d_inner, d_state, d_state])
+        Bnaive = torch.zeros([d_inner, d_state, 1])
+        Bnaive_t = torch.zeros([d_inner, 1, d_state])
+        for i in range(A.shape[0]):
+            Anaive[i,:,:] = torch.diag(A[i,:])
+            Anaive_t[i,:,:] = torch.transpose(Anaive[i,:,:], 0,1)
+            Bnaive[i,:,0] = B[i,:]
+            Bnaive_t[i,0,:] = B[i,:]
+
+        t3_atpb = compute_atpb(A,P,B)
+        t3_btpbr = compute_btpbr(B,P,R)
+
+        print('t3_atpb:{0}'.format(t3_atpb))
+
+        for i in range(A.shape[0]):
+            atpb = Anaive_t[i,:,:] @ P[i,:,:] @ Bnaive[i,:,:]
+            bpbr = Bnaive_t[i, :, :] @ P[i,:,:] @ Bnaive[i,:,:] + R
+            assert bpbr.shape[0] == 1
+            assert bpbr.shape[1] == 1
+            btpa = Bnaive_t[i,:,:] @ P[i,:,:] @ Anaive[i,:,:]
+            naive_t3_mat = atpb @ torch.inverse(bpbr) @ btpa
+            naive_t3[i,:,:] = naive_t3_mat
+            print('atpb shape:{0}'.format(atpb.shape))
+            print('bpbr shape:{0}'.format(bpbr.shape))
+            print('btpa shape:{0}'.format(btpa.shape))
+            print('naive_t3 shape:{0}'.format(naive_t3.shape))
+            np.testing.assert_allclose(atpb[:,0], t3_atpb[i,:])
+            np.testing.assert_allclose(bpbr[0,0], t3_btpbr[i])            
+
+
+        print('naive t3:')
+        print(naive_t3)
+
     def test_P_t2(self):
         d_inner = 5
         d_state = 2
@@ -56,61 +129,7 @@ class TestControl(unittest.TestCase):
             # print(t2_naive[i,:,:])
             np.testing.assert_allclose(actual = t2[i,:,:], desired=t2_naive[i,:,:])
 
-        print('t2')
-        print(t2)
 
-    def test_P_t3(self):
-        d_inner = 5
-        d_state = 2
-        A = torch.zeros([d_inner, d_state])
-        P = torch.zeros([d_inner, d_state, d_state])
-        B = torch.zeros([d_state,1])
-        R = torch.ones([1])
-        B = torch.zeros([d_inner, d_state])
-
-        A[0,0] = 1.0
-        A[0,1] = 2.0
-        A[1,0] = 3.0
-        A[1,1] = -1.0
-        A[3,0] = -2.5
-        A[3,1] = 3.5
-        P[1,0,0] = 0.5
-        P[1,1,0] = 1.0
-        P[1,1,1] = 0.1
-        P[3,0,0] = -1.0
-        P[3,0,1] = 2.0
-        P[3,1,0] = 4.0
-        B[1,0] = 0.9
-        B[1,1] = -1.2
-        B[3,0] = 0.8
-        B[3,1] = 0.95
-
-        naive_t3 = torch.zeros([d_inner,d_state,d_state])
-
-        # Convert A to non-compressed representation.
-        Anaive = torch.zeros([d_inner, d_state, d_state])
-        Anaive_t = torch.zeros([d_inner, d_state, d_state])
-        Bnaive = torch.zeros([d_inner, d_state, 1])
-        Bnaive_t = torch.zeros([d_inner, 1, d_state])
-        for i in range(A.shape[0]):
-            Anaive[i,:,:] = torch.diag(A[i,:])
-            Anaive_t[i,:,:] = torch.transpose(Anaive[i,:,:], 0,1)
-            Bnaive[i,:,0] = B[i,:]
-            Bnaive_t[i,0,:] = B[i,:]
-
-        for i in range(A.shape[0]):
-            atpb = Anaive_t[i,:,:] @ P[i,:,:] @ Bnaive[i,:,:]
-            bpbr = Bnaive_t[i, :, :] @ P[i,:,:] @ Bnaive[i,:,:] + R
-            print(bpbr.shape)
-            assert bpbr.shape[0] == 1
-            assert bpbr.shape[1] == 1
-            btpa = Bnaive_t[i,:,:] @ P[i,:,:] @ Anaive[i,:,:]
-            naive_t3_mat = atpb @ torch.inverse(bpbr) @ btpa
-            
-            naive_t3[i,:,:] = naive_t3_mat
-
-        print('naive t3:')
-        print(naive_t3)
 
             
 
